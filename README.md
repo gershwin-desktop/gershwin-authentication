@@ -1,22 +1,12 @@
-# Gershwin App Template
-
-This github template aims to help developers get a head start with their environment setup
+# Gershwin Authentication
+This provides gsauth that presents an authentication window for Gershwin Applications
 
 Prerequisites
 
-- Gershwin installation
-- clang
-
-
-### Features
-
-- Related files to help your editor's intellisense
-- Files to help with formatting. They include this project's code style settings so please use them
-- Settings file for VSCode
-- Basic hello world application that will build
-
-If you use neovim or some other IDE/editor, please check out the dev-config repo
-
+```
+sudo pkg install -g 'GhostBSD*-dev'
+sudo pkg install gershwin-developer
+```
 
 ## Build Instructions
 
@@ -32,5 +22,5 @@ sudo gmake install
 
 ### Run
 ```bash
-openapp HelloWorld
+gsauth --exec pkg update
 ```
