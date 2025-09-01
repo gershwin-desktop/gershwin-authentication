@@ -15,15 +15,19 @@
     NSButton *cancelButton;
     NSString *requestingApp;
     NSString *requestedAction;
+    NSString *commandToRun;
+    NSArray *commandArguments;
     BOOL authenticated;
+    NSString *userPassword;
 }
 
-- (id)initWithApp:(NSString *)app action:(NSString *)action;
+- (id)initWithApp:(NSString *)app action:(NSString *)action command:(NSString *)cmd arguments:(NSArray *)args;
 - (void)createWindow;
 - (void)show;
 - (void)authenticate:(id)sender;
 - (void)cancel:(id)sender;
 - (BOOL)verifyPassword:(NSString *)password forUser:(NSString *)username;
+- (int)executeCommandWithSudo;
 - (void)setStatus:(NSString *)status isError:(BOOL)isError;
 - (BOOL)isAuthenticated;
 
@@ -31,13 +35,16 @@
 
 @implementation GSAuthWindow
 
-- (id)initWithApp:(NSString *)app action:(NSString *)action
+- (id)initWithApp:(NSString *)app action:(NSString *)action command:(NSString *)cmd arguments:(NSArray *)args
 {
     self = [super init];
     if (self) {
         requestingApp = [app retain];
         requestedAction = [action retain];
+        commandToRun = [cmd retain];
+        commandArguments = [args retain];
         authenticated = NO;
+        userPassword = nil;
     }
     return self;
 }
@@ -46,6 +53,9 @@
 {
     [requestingApp release];
     [requestedAction release];
+    [commandToRun release];
+    [commandArguments release];
+    [userPassword release];
     [window release];
     [super dealloc];
 }
@@ -233,19 +243,62 @@
     
     [task release];
     
-    // Clear sudo timestamp again for security
-    NSTask *clearTask2 = [[NSTask alloc] init];
-    [clearTask2 setLaunchPath:@"sudo"];
-    [clearTask2 setArguments:@[@"-k"]];
+    return success;
+}
+
+- (int)executeCommandWithSudo
+{
+    if (!commandToRun || !userPassword) {
+        return 1;
+    }
+    
+    // Build the sudo command
+    NSMutableArray *sudoArgs = [NSMutableArray arrayWithObjects:@"-S", commandToRun, nil];
+    if (commandArguments) {
+        [sudoArgs addObjectsFromArray:commandArguments];
+    }
+    
+    NSTask *task = [[NSTask alloc] init];
+    [task setLaunchPath:@"sudo"];
+    [task setArguments:sudoArgs];
+    
+    NSPipe *inputPipe = [NSPipe pipe];
+    [task setStandardInput:inputPipe];
+    
+    int returnCode = 1;
     
     @try {
-        [clearTask2 launch];
-        [clearTask2 waitUntilExit];
+        [task launch];
+        
+        // Provide password to sudo
+        NSFileHandle *writeHandle = [inputPipe fileHandleForWriting];
+        NSString *passwordWithNewline = [userPassword stringByAppendingString:@"\n"];
+        [writeHandle writeData:[passwordWithNewline dataUsingEncoding:NSUTF8StringEncoding]];
+        [writeHandle closeFile];
+        
+        [task waitUntilExit];
+        returnCode = [task terminationStatus];
+    }
+    @catch (NSException *exception) {
+        NSLog(@"Exception during command execution: %@", exception);
+        returnCode = 1;
+    }
+    
+    [task release];
+    
+    // Clear sudo timestamp for security
+    NSTask *clearTask = [[NSTask alloc] init];
+    [clearTask setLaunchPath:@"sudo"];
+    [clearTask setArguments:@[@"-k"]];
+    
+    @try {
+        [clearTask launch];
+        [clearTask waitUntilExit];
     }
     @catch (NSException *exception) {}
-    [clearTask2 release];
+    [clearTask release];
     
-    return success;
+    return returnCode;
 }
 
 - (void)authenticate:(id)sender
@@ -264,6 +317,7 @@
     
     if ([self verifyPassword:password forUser:username]) {
         authenticated = YES;
+        userPassword = [password retain];
         [window close];
         [NSApp stop:nil];
     } else {
@@ -313,19 +367,37 @@ int main(int argc, char *argv[])
     
     const char *appName = "Application";
     const char *action = "perform administrative tasks";
+    NSString *commandToRun = nil;
+    NSMutableArray *commandArgs = nil;
     
     // Parse command line arguments
-    if (argc > 1) {
-        appName = argv[1];
+    // gsauth [app_name] [action] [--exec command [args...]]
+    int i = 1;
+    if (argc > i && strncmp(argv[i], "--", 2) != 0) {
+        appName = argv[i++];
     }
-    if (argc > 2) {
-        action = argv[2];
+    if (argc > i && strncmp(argv[i], "--", 2) != 0) {
+        action = argv[i++];
+    }
+    
+    // Check for --exec flag
+    if (argc > i && strcmp(argv[i], "--exec") == 0) {
+        i++;
+        if (argc > i) {
+            commandToRun = [NSString stringWithUTF8String:argv[i++]];
+            commandArgs = [NSMutableArray array];
+            while (i < argc) {
+                [commandArgs addObject:[NSString stringWithUTF8String:argv[i++]]];
+            }
+        }
     }
     
     // Create and show the authentication window
     GSAuthWindow *authWindow = [[GSAuthWindow alloc] 
         initWithApp:[NSString stringWithUTF8String:appName]
-        action:[NSString stringWithUTF8String:action]];
+        action:[NSString stringWithUTF8String:action]
+        command:commandToRun
+        arguments:commandArgs];
     
     [authWindow createWindow];
     [authWindow show];
@@ -335,11 +407,21 @@ int main(int argc, char *argv[])
     
     // Get the result
     BOOL authenticated = [authWindow isAuthenticated];
+    int returnCode = 1;
+    
+    if (authenticated) {
+        if (commandToRun) {
+            // Execute the command with sudo if provided
+            returnCode = [authWindow executeCommandWithSudo];
+        } else {
+            // Just return success for authentication
+            returnCode = 0;
+        }
+    }
     
     // Clean up
     [authWindow release];
     [pool release];
     
-    // Return 0 for success, 1 for failure
-    return authenticated ? 0 : 1;
+    return returnCode;
 }
